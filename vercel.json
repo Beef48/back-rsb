@@ -1,15 +1,38 @@
 {
-  "version": 2,
+  "functions": {
+    "backend-extension.js": {
+      "maxDuration": 30
+    }
+  },
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "key": "Access-Control-Allow-Methods",
+          "value": "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        },
+        {
+          "key": "Access-Control-Allow-Headers",
+          "value": "Content-Type, Authorization"
+        }
+      ]
+    }
+  ],
   "builds": [
     {
-      "src": "server.js",
+      "src": "backend-extension.js",
       "use": "@vercel/node"
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "server.js"
+      "dest": "/backend-extension.js"
     }
   ]
 }
