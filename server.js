@@ -854,7 +854,10 @@ fastify.patch('/persons/:id', async (request, reply) => {
 });
 
 //  Lancement serveur
-fastify.listen({ port: 3100 }, (err, address) => {
+const port = process.env.PORT || 3100;
+const host = process.env.NODE_ENV === 'production' ? '0.0.0.0' : 'localhost';
+
+fastify.listen({ port, host }, (err, address) => {
   if (err) {
     fastify.log.error(err);
     process.exit(1);
