@@ -4,12 +4,23 @@ import fetch from 'node-fetch';
 import { createClient } from '@supabase/supabase-js';
 
 // 🔑 Supabase config
-const SUPABASE_URL = 'https://eipcfllnkmiappadezyy.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGNmbGxua21pYXBwYWRlenl5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM0NDcwOTEsImV4cCI6MjA2OTAyMzA5MX0.mV7uXl3YMLp9tvakZcx3V7Cf3Pdntbpel2sMOpRcJvQ';
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://eipcfllnkmiappadezyy.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGNmbGxua21pYXBwYWRlenl5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM0NDcwOTEsImV4cCI6MjA2OTAyMzA5MX0.mV7uXl3YMLp9tvakZcx3V7Cf3Pdntbpel2sMOpRcJvQ';
+
+// Vérification des variables d'environnement critiques
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  console.error('❌ Variables d\'environnement Supabase manquantes');
+  process.exit(1);
+}
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const fastify = Fastify({ logger: true });
+const fastify = Fastify({ 
+  logger: {
+    level: process.env.LOG_LEVEL || 'info',
+    prettyPrint: process.env.NODE_ENV !== 'production'
+  }
+});
 
 // Fonction utilitaire pour interpoler des données sur une grille commune
 function interpolateArray(xValues, yValues, newXValues) {
@@ -53,7 +64,75 @@ function interpolateArray(xValues, yValues, newXValues) {
 
 // --- CORS ---
 await fastify.register(fastifyCors, {
-  origin: true // ou ['http://localhost:5173'] pour n'autoriser que le front
+  origin: (origin, callback) => {
+    // Autoriser les requêtes sans origine (ex: Postman, applications mobiles)
+    if (!origin) return callback(null, true);
+    
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'http://localhost:5173',
+      'http://localhost:8080',
+      'https://front-rsb.vercel.app'
+    ];
+    
+    // Autoriser tous les domaines .vercel.app et .netlify.app
+    const isVercelApp = /\.vercel\.app$/.test(origin);
+    const isNetlifyApp = /\.netlify\.app$/.test(origin);
+    
+    if (allowedOrigins.includes(origin) || isVercelApp || isNetlifyApp) {
+      return callback(null, true);
+    }
+    
+    return callback(new Error('Non autorisé par CORS'), false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Length', 'X-JSON'],
+  maxAge: 86400 // Cache preflight pendant 24h
+});
+
+// Middleware de sanité pour les requêtes
+fastify.addHook('preHandler', async (request, reply) => {
+  // Limiter la taille des requêtes POST/PUT/PATCH
+  if (['POST', 'PUT', 'PATCH'].includes(request.method)) {
+    const contentLength = request.headers['content-length'];
+    if (contentLength && parseInt(contentLength) > 10 * 1024 * 1024) { // 10MB max
+      return reply.status(413).send({ error: 'Requête trop volumineuse' });
+    }
+  }
+  
+  // Log des requêtes importantes
+  if (request.url !== '/' && !request.url.startsWith('/favicon')) {
+    request.log.info(`${request.method} ${request.url}`);
+  }
+});
+
+// Middleware de gestion d'erreurs globale
+fastify.setErrorHandler(async (error, request, reply) => {
+  request.log.error(error);
+  
+  // Erreurs CORS
+  if (error.message.includes('CORS')) {
+    return reply.status(403).send({ 
+      error: 'Accès refusé par CORS',
+      details: 'Origine non autorisée'
+    });
+  }
+  
+  // Erreurs de validation
+  if (error.validation) {
+    return reply.status(400).send({ 
+      error: 'Données invalides',
+      details: error.message
+    });
+  }
+  
+  // Erreur générique
+  return reply.status(500).send({ 
+    error: 'Erreur interne du serveur',
+    details: process.env.NODE_ENV === 'development' ? error.message : 'Erreur interne'
+  });
 });
 
 // ✅ Route ping
@@ -582,14 +661,25 @@ fastify.post('/analyze/persons', async (request, reply) => {
 // ✅ Route /overview - Statistiques globales
 fastify.get('/overview', async (request, reply) => {
   try {
-    const { data, error } = await supabase.from('persons').select('age, start_time, end_time, raw_data');
+    // Optimisation: sélectionner uniquement les champs nécessaires
+    const { data, error } = await supabase
+      .from('persons')
+      .select('age, start_time, end_time, raw_data')
+      .limit(1000); // Limiter pour éviter les timeouts
+      
     if (error) {
       request.log.error(error);
       return reply.status(500).send({ error: 'Erreur Supabase', details: error.message });
     }
 
     if (!data || data.length === 0) {
-      return reply.send({ total: 0 });
+      return reply.send({ 
+        total_users: 0,
+        average_age: 0,
+        rsb_range: { min: null, max: null },
+        average_valid_word_rate: 0,
+        last_test_date: null
+      });
     }
 
     const ages = data.map(p => p.age).filter(age => typeof age === 'number');
