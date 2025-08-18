@@ -1,0 +1,24 @@
+{
+  "name": "supabase-fastify-api",
+  "version": "1.0.0",
+  "description": "API Fastify avec Supabase",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.0.1",
+    "@supabase/supabase-js": "^2.38.4",
+    "fastify": "^5.0.0",
+    "node-fetch": "^3.3.2"
+  },
+  "keywords": [
+    "fastify",
+    "supabase",
+    "api"
+  ],
+  "author": "",
+  "license": "MIT"
+}
