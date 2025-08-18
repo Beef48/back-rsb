@@ -1,6 +1,5 @@
 {
   "version": 2,
-  "public": true,
   "functions": {
     "server.js": {
       "maxDuration": 30
@@ -16,6 +15,17 @@
     {
       "src": "/(.*)",
       "dest": "server.js"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
     }
   ]
 }
