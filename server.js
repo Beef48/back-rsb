@@ -1,13 +1,97 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
 import fetch from 'node-fetch';
-import { createClient } from '@supabase/supabase-js';
+import pg from 'pg';
 
-// 🔑 Supabase config
-const SUPABASE_URL = 'https://eipcfllnkmiappadezyy.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpcGNmbGxua21pYXBwYWRlenl5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM0NDcwOTEsImV4cCI6MjA2OTAyMzA5MX0.mV7uXl3YMLp9tvakZcx3V7Cf3Pdntbpel2sMOpRcJvQ';
+// PostgreSQL config
+const { Pool } = pg;
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const DATABASE_URL = process.env.DATABASE_URL;
+
+if (!DATABASE_URL) {
+  throw new Error('DATABASE_URL est requis pour se connecter a Neon PostgreSQL');
+}
+
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
+
+const PERSON_COLUMNS = new Set([
+  'id',
+  'person_name',
+  'raw_data',
+  'user_id',
+  'age',
+  'start_time',
+  'end_time',
+  'pathologie',
+  'commentaire'
+]);
+
+function quoteIdentifier(identifier) {
+  if (!PERSON_COLUMNS.has(identifier)) {
+    throw new Error(`Colonne non autorisee: ${identifier}`);
+  }
+  return `"${identifier}"`;
+}
+
+function parseColumns(columns) {
+  if (columns === '*') return '*';
+  return columns.split(',').map(column => quoteIdentifier(column.trim())).join(', ');
+}
+
+async function getPersons({ columns = '*', where = '', params = [], limit } = {}) {
+  const selectedColumns = parseColumns(columns);
+  const limitClause = typeof limit === 'number' ? ` LIMIT ${limit}` : '';
+  const { rows } = await pool.query(`SELECT ${selectedColumns} FROM persons${where}${limitClause}`, params);
+  return rows;
+}
+
+async function insertPersons(persons) {
+  if (!persons.length) return [];
+
+  const columns = ['person_name', 'raw_data', 'user_id', 'age', 'start_time', 'end_time'];
+  const values = [];
+  const placeholders = persons.map((person, personIndex) => {
+    const rowPlaceholders = columns.map((column, columnIndex) => {
+      values.push(person[column] ?? null);
+      return `$${personIndex * columns.length + columnIndex + 1}`;
+    });
+    return `(${rowPlaceholders.join(', ')})`;
+  });
+
+  const sql = `
+    INSERT INTO persons (${columns.map(quoteIdentifier).join(', ')})
+    VALUES ${placeholders.join(', ')}
+    RETURNING *
+  `;
+  const { rows } = await pool.query(sql, values);
+  return rows;
+}
+
+async function updatePersonById(id, updateData) {
+  const entries = Object.entries(updateData);
+  const setClause = entries.map(([column], index) => `${quoteIdentifier(column)} = $${index + 1}`).join(', ');
+  const values = entries.map(([, value]) => value);
+  values.push(id);
+
+  const { rows } = await pool.query(
+    `UPDATE persons SET ${setClause} WHERE id = $${values.length} RETURNING *`,
+    values
+  );
+  return rows;
+}
+
+async function deletePersonById(id) {
+  const { rows } = await pool.query('DELETE FROM persons WHERE id = $1 RETURNING *', [id]);
+  return rows;
+}
+
+async function deletePersonsByIds(ids) {
+  const { rows } = await pool.query('DELETE FROM persons WHERE id = ANY($1::uuid[]) RETURNING *', [ids]);
+  return rows;
+}
 
 const fastify = Fastify({ logger: true });
 
@@ -58,17 +142,13 @@ await fastify.register(fastifyCors, {
 
 // ✅ Route ping
 fastify.get('/', async () => {
-  return { status: 'ok', message: 'API Supabase Fastify en ligne 🚀' };
+  return { status: 'ok', message: 'API Neon PostgreSQL Fastify en ligne' };
 });
 
 // ✅ Route /persons
 fastify.get('/persons', async (request, reply) => {
   try {
-    const { data, error } = await supabase.from('persons').select('*').limit(100);
-    if (error) {
-      request.log.error(error);
-      return reply.status(500).send({ error: 'Erreur Supabase', details: error.message });
-    }
+    const data = await getPersons({ limit: 100 });
     return reply.send(data);
   } catch (err) {
     request.log.error(err);
@@ -80,11 +160,7 @@ fastify.get('/persons', async (request, reply) => {
 fastify.get('/persons/:name', async (request, reply) => {
   try {
     const { name } = request.params;
-    const { data, error } = await supabase.from('persons').select('*').eq('person_name', name);
-    if (error) {
-      request.log.error(error);
-      return reply.status(500).send({ error: 'Erreur Supabase', details: error.message });
-    }
+    const data = await getPersons({ where: ' WHERE person_name = $1', params: [name] });
     if (!data || data.length === 0) {
       return reply.status(404).send({ error: `Aucune personne trouvée avec le nom "${name}"` });
     }
@@ -98,11 +174,7 @@ fastify.get('/persons/:name', async (request, reply) => {
 // ✅ Route /stats/words
 fastify.get('/stats/words', async (request, reply) => {
   try {
-    const { data, error } = await supabase.from('persons').select('raw_data');
-    if (error) {
-      request.log.error(error);
-      return reply.status(500).send({ error: 'Erreur Supabase', details: error.message });
-    }
+    const data = await getPersons({ columns: 'raw_data' });
 
     const stats = {};
 
@@ -143,11 +215,7 @@ fastify.get('/stats/words', async (request, reply) => {
 // ✅ Route /stats/errors
 fastify.get('/stats/errors', async (request, reply) => {
   try {
-    const { data, error } = await supabase.from('persons').select('raw_data');
-    if (error) {
-      request.log.error(error);
-      return reply.status(500).send({ error: 'Erreur Supabase', details: error.message });
-    }
+    const data = await getPersons({ columns: 'raw_data' });
 
     const errors = {};
 
@@ -183,11 +251,7 @@ fastify.get('/stats/errors', async (request, reply) => {
 // ✅ Route /analyze/all - Analyser toutes les personnes
 fastify.get('/analyze/all', async (request, reply) => {
   try {
-    const { data, error } = await supabase.from('persons').select('*');
-    if (error) {
-      request.log.error(error);
-      return reply.status(500).send({ error: 'Erreur Supabase', details: error.message });
-    }
+    const data = await getPersons();
 
     const results = [];
     for (const person of data) {
@@ -345,11 +409,7 @@ fastify.post('/analyze/persons', async (request, reply) => {
     const results = [];
     
     for (const name of personNames) {
-      const { data, error } = await supabase.from('persons').select('*').eq('person_name', name);
-      if (error) {
-        request.log.error(error);
-        continue;
-      }
+      const data = await getPersons({ where: ' WHERE person_name = $1', params: [name] });
 
       for (const person of data) {
         const raw = person.raw_data;
@@ -456,8 +516,10 @@ fastify.post('/analyze/persons', async (request, reply) => {
     }
 
     // Calcul des statistiques globales sur TOUTES les personnes de la BDD
-    const { data: allPersons, error: allError } = await supabase.from('persons').select('*');
-    if (allError) {
+    let allPersons = [];
+    try {
+      allPersons = await getPersons();
+    } catch (allError) {
       request.log.error(allError);
       return reply.send(results); // Retourner au moins les résultats demandés
     }
@@ -582,11 +644,7 @@ fastify.post('/analyze/persons', async (request, reply) => {
 // ✅ Route /overview - Statistiques globales
 fastify.get('/overview', async (request, reply) => {
   try {
-    const { data, error } = await supabase.from('persons').select('age, start_time, end_time, raw_data');
-    if (error) {
-      request.log.error(error);
-      return reply.status(500).send({ error: 'Erreur Supabase', details: error.message });
-    }
+    const data = await getPersons({ columns: 'age, start_time, end_time, raw_data' });
 
     if (!data || data.length === 0) {
       return reply.send({ total: 0 });
@@ -726,11 +784,8 @@ fastify.post('/import', async (request, reply) => {
       processedPersons.push(extractedData);
     }
 
-    // Insertion dans Supabase
-    const { error } = await supabase.from('persons').insert(processedPersons);
-    if (error) {
-      return reply.status(500).send({ error: error.message });
-    }
+    // Insertion dans PostgreSQL
+    await insertPersons(processedPersons);
 
     return reply.send({ 
       success: true, 
@@ -768,17 +823,8 @@ fastify.put('/persons/:id/reference', async (request, reply) => {
       return reply.status(400).send({ error: 'Aucune donnée à mettre à jour (pathologie ou commentaire)' });
     }
 
-    // Mettre à jour dans Supabase
-    const { data, error } = await supabase
-      .from('persons')
-      .update(updateData)
-      .eq('id', id)
-      .select();
-
-    if (error) {
-      request.log.error(error);
-      return reply.status(500).send({ error: 'Erreur Supabase', details: error.message });
-    }
+    // Mettre à jour dans PostgreSQL
+    const data = await updatePersonById(id, updateData);
 
     if (!data || data.length === 0) {
       return reply.status(404).send({ error: 'Personne non trouvée' });
@@ -797,15 +843,7 @@ fastify.put('/persons/:id/reference', async (request, reply) => {
 // ✅ Route GET /persons/with-reference - Récupérer toutes les personnes avec pathologie et commentaire
 fastify.get('/persons/with-reference', async (request, reply) => {
   try {
-    const { data, error } = await supabase
-      .from('persons')
-      .select('id, person_name, age, pathologie, commentaire')
-      .limit(100);
-
-    if (error) {
-      request.log.error(error);
-      return reply.status(500).send({ error: 'Erreur Supabase', details: error.message });
-    }
+    const data = await getPersons({ columns: 'id, person_name, age, pathologie, commentaire', limit: 100 });
 
     return reply.send(data || []);
   } catch (err) {
@@ -837,16 +875,7 @@ fastify.patch('/persons/:id', async (request, reply) => {
       return reply.status(400).send({ error: 'Aucune donnée à mettre à jour' });
     }
 
-    const { data, error } = await supabase
-      .from('persons')
-      .update(updateData)
-      .eq('id', id)
-      .select();
-
-    if (error) {
-      request.log.error(error);
-      return reply.status(500).send({ error: 'Erreur Supabase', details: error.message });
-    }
+    const data = await updatePersonById(id, updateData);
 
     if (!data || data.length === 0) {
       return reply.status(404).send({ error: 'Personne non trouvée' });
@@ -868,17 +897,8 @@ fastify.delete('/persons/:id', async (request, reply) => {
       return reply.status(400).send({ error: 'ID de la personne requis' });
     }
 
-    // Supprimer de Supabase
-    const { data, error } = await supabase
-      .from('persons')
-      .delete()
-      .eq('id', id)
-      .select();
-
-    if (error) {
-      request.log.error(error);
-      return reply.status(500).send({ error: 'Erreur Supabase', details: error.message });
-    }
+    // Supprimer de PostgreSQL
+    const data = await deletePersonById(id);
 
     if (!data || data.length === 0) {
       return reply.status(404).send({ error: 'Personne non trouvée' });
@@ -903,17 +923,8 @@ fastify.delete('/persons', async (request, reply) => {
       return reply.status(400).send({ error: 'Liste d\'IDs requise (tableau non vide)' });
     }
 
-    // Supprimer de Supabase
-    const { data, error } = await supabase
-      .from('persons')
-      .delete()
-      .in('id', ids)
-      .select();
-
-    if (error) {
-      request.log.error(error);
-      return reply.status(500).send({ error: 'Erreur Supabase', details: error.message });
-    }
+    // Supprimer de PostgreSQL
+    const data = await deletePersonsByIds(ids);
 
     return reply.send({
       message: `${data?.length || 0} personne(s) supprimée(s) avec succès`,

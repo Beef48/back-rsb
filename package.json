@@ -1,23 +1,25 @@
 {
-  "name": "supabase-fastify-api",
+  "name": "neon-fastify-api",
   "version": "1.0.0",
-  "description": "API Fastify avec Supabase",
+  "description": "API Fastify avec Neon PostgreSQL",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "build": "echo 'Build completed'"
+    "build": "echo 'Build completed'",
+    "migrate:neon": "node scripts/migrate-supabase-to-neon.js"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.1",
-    "@supabase/supabase-js": "^2.38.4",
     "fastify": "^5.0.0",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "pg": "^8.20.0"
   },
   "keywords": [
     "fastify",
-    "supabase",
+    "neon",
+    "postgresql",
     "api"
   ],
   "author": "",
